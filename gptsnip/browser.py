@@ -9,11 +9,13 @@ import multiprocessing as mp
 import os
 from queue import Empty, Full, Queue
 import re
+import sys
 from threading import Event, Thread
 import time
 from urllib.parse import urlsplit
 
 READ_TIMEOUT = 1.0
+FROZEN_READ_TIMEOUT = 1.5
 MAX_RESULT_AGE = 0.3
 STABILITY_SECONDS = 0.12
 RETRY_SECONDS = 2.0
@@ -95,7 +97,11 @@ def _worker(connection):
 class BrowserReader:
     """One supervisor, at most one child and one outstanding request. No UI waits."""
 
-    def __init__(self, worker=_worker, timeout=READ_TIMEOUT, clock=time.monotonic):
+    def __init__(self, worker=_worker, timeout=None, clock=time.monotonic):
+        if timeout is None:
+            # Packaged process bootstrap needs modest bounded headroom. Freshness,
+            # document identity, and fail-closed result checks remain independent.
+            timeout = FROZEN_READ_TIMEOUT if getattr(sys, 'frozen', False) else READ_TIMEOUT
         self.worker, self.timeout, self.clock = worker, timeout, clock
         self.requests, self.results = Queue(maxsize=1), Queue(maxsize=1)
         self.stopping, self.occupied = Event(), Event()

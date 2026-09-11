@@ -18,6 +18,17 @@ def hung_worker(connection):
     time.sleep(30)
 
 
+def slow_fresh_worker(connection):
+    # Warm the real transport first, so this regression measures the request
+    # budget independently of variable source interpreter startup on the host.
+    token, window, _ = connection.recv()
+    connection.send((token, DocumentResult('verified', 'chatgpt.com', window, time.monotonic(), '')))
+    token, window, _ = connection.recv()
+    time.sleep(1.05)
+    connection.send((token, DocumentResult('verified', 'chatgpt.com', window, time.monotonic(), '')))
+    time.sleep(30)
+
+
 def stale_worker(connection):
     token, window, _ = connection.recv()
     connection.send((token, DocumentResult('verified', 'chatgpt.com', window, time.monotonic() - 2, '')))
@@ -73,6 +84,12 @@ class DiagnosticTests(unittest.TestCase):
 
 
 class WorkerTests(unittest.TestCase):
+    def frozen_reader(self, worker):
+        # Only constructor policy is frozen; the test's real worker still uses
+        # source Python spawn, not a fabricated frozen executable command line.
+        with patch('gptsnip.browser.sys.frozen', True, create=True):
+            return self.reader(worker, timeout=None)
+
     def reader(self, worker, timeout=1.5):
         reader = BrowserReader(worker=worker, timeout=timeout)
         def cleanup():
@@ -133,6 +150,48 @@ class WorkerTests(unittest.TestCase):
         reader.close()
         self.assertIsNone(reader.request('window A'))
         self.assertIsNone(reader.thread)
+
+    def test_frozen_default_has_bounded_headroom_and_source_default_is_unchanged(self):
+        with patch('gptsnip.browser.sys.frozen', False, create=True):
+            self.assertEqual(BrowserReader().timeout, 1.0)
+        with patch('gptsnip.browser.sys.frozen', True, create=True):
+            self.assertEqual(BrowserReader().timeout, 1.5)
+            self.assertEqual(BrowserReader(timeout=0.25).timeout, 0.25)
+
+    def test_frozen_budget_accepts_slow_but_fresh_positive_result(self):
+        reader = self.frozen_reader(slow_fresh_worker)
+        reader.request('window A')
+        _, primed = self.receive(reader)
+        self.assertTrue(primed.eligible)
+        reader.request('window A')
+        _, result = self.receive(reader)
+        self.assertTrue(result.eligible)
+        self.assertEqual(result.snapshot, 'window A')
+
+    def test_frozen_budget_still_times_out_hung_worker_and_fails_closed(self):
+        baseline = {p.pid for p in mp.active_children()}
+        reader = self.frozen_reader(hung_worker)
+        reader.request('window A')
+        _, result = self.receive(reader)
+        self.assertFalse(result.eligible)
+        self.assertIn('timeout', result.reason)
+        reader.close()
+        reader.thread.join(3)
+        self.assertFalse(reader.thread.is_alive())
+        self.assertEqual({p.pid for p in mp.active_children()}, baseline)
+
+    def test_frozen_headroom_does_not_extend_positive_sample_freshness(self):
+        # Isolate reply freshness from variable source process startup. The real
+        # worker transport and retirement paths have separate tests above.
+        with patch('gptsnip.browser.sys.frozen', True, create=True):
+            reader = BrowserReader(clock=lambda: 10.0)
+        self.assertEqual(reader.timeout, 1.5)
+        reader.pending = (1, 10.0 + reader.timeout)
+        reader.results.put_nowait((1, DocumentResult(
+            'verified', 'chatgpt.com', 'window A', 9.6, '')))
+        _, result = reader.poll()
+        self.assertFalse(result.eligible)
+        self.assertEqual(result.reason, 'stale_reply')
 
 
 if __name__ == '__main__':

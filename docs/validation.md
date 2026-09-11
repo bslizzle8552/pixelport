@@ -3,7 +3,47 @@
 The final feature-frozen functional baseline is commit `7063818` (September 11,
 2026). Public naming, documentation, version metadata, and dependency/ignore hygiene
 were prepared afterward without changing capture, targeting, or paste decisions.
-No executable has been packaged; source acceptance is not frozen-build acceptance.
+This page distinguishes source acceptance from frozen-build acceptance. See
+[packaging](packaging.md) for packaging history and the accepted release.
+
+## ONEFILE physical acceptance — v0.1.0 accepted
+
+The user reports that the actual ONEFILE PixelPort.exe passed real-world physical
+testing and explicitly accepts it for v0.1.0. This is the final release acceptance,
+not an inference from source tests or ONEDIR results. No further physical gate is
+pending for v0.1.0. Earlier provisional checklists below are historical evidence.
+
+Accepted EXE SHA-256:
+`5d92b142a0f8723102254bd6b866398d93d75a97e717ec45db3e01cda70a7311`.
+The default Windows executable icon is accepted for this release. The approved PNG
+logo is used in the README; a custom ICO is not required.
+See [release record](release-v0.1.0.md) for final validation and release contents.
+
+## Frozen ONEDIR physical acceptance — September 11, 2026
+
+The operator physically tested the actual `dist/PixelPort/PixelPort.exe` (SHA-256
+`3ad752ea4984abb8629522770bc0b3101cb9f2b3ddf0dbe235b34d1073638544`) and confirmed:
+
+- Cold double-click launch with no Python/PowerShell launch or manual G binding.
+- Automatic Chrome/chatgpt.com recognition.
+- Physical middle-button hold, drag and release; automatic screenshot paste into
+  ChatGPT with the attachment remaining UNSENT.
+- A second complete cold launch works.
+- In the same Chrome window, changing ChatGPT to another webpage invalidates the
+  automatic target; capture remains on clipboard with no automatic paste.
+- Returning to ChatGPT automatically verifies again and restores automatic paste.
+
+These are user-reported **frozen EXE** results, separate from source acceptance.
+The non-target webpage was not specifically identified as GitHub in this report.
+Physical ONEDIR acceptance is substantial, but the following remain unconfirmed:
+tiny middle-click; Escape cancellation and next-gesture recovery; keyboard fallback;
+duplicate refusal; Q quit, normal middle-click restoration and relaunch; multi-monitor
+capture. Earlier source physical results and frozen automated lifecycle checks do
+not establish those remaining frozen physical results. No test is silently promoted.
+
+No unresolved ONEDIR engineering problem is currently known. The user authorized
+preparing/testing ONEFILE while keeping remaining physical checks explicit. That was the interim ONEDIR record; the later user acceptance above approves the
+ONEFILE release and supersedes the previous outstanding-release checklist.
 
 ## Physical acceptance of the functional baseline
 
@@ -92,11 +132,8 @@ HDR/protected content, elevated/secure desktops, remote sessions, full-screen ga
 remapped mice, free-threaded Python, and hung foreign input queues are not fully
 validated. Bounds changes do not detect every display topology/scaling change.
 
-The next dedicated pass must validate a frozen worker entry point and dependency
-collection, then rerun automated/native checks and physical acceptance against the
-actual downloadable executable on Windows 11 without a Python installation.
-The current source entry point does not implement a frozen packaging launcher or
-early `multiprocessing.freeze_support()`; add and verify these as packaging work.
-Keep the existing deadlines and fail-closed checks. The planned executable name is
-`PixelPort.exe`. No package, installer, archive, tag, or GitHub Release exists from
-this preparation pass.
+The frozen launcher and dependency collection have been validated, and the user
+has accepted the ONEFILE executable for v0.1.0. Source execution keeps a 1.0-second
+reader timeout; frozen execution uses the approved bounded 1.5-second timeout.
+All freshness and fail-closed checks remain. The final ZIP is staged locally for
+GitHub upload; no installer is used. See [release record](release-v0.1.0.md).

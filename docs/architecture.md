@@ -15,8 +15,9 @@ The session mutex `Local\GPTSnipV0`, hidden hotkey class `GPTSnipV0Hotkeys`, wor
 thread names, and `GPTSNIP_*` diagnostic environment variables retain their existing
 identities. Keeping the mutex also prevents the old and newly branded source builds
 from running competing hooks in the same session. The hidden window's display name,
-console notices, and diagnostic prefixes use PixelPort. The future executable is
-named `PixelPort.exe`; frozen packaging is not yet implemented or validated.
+console notices, and diagnostic prefixes use PixelPort. The accepted executable is
+`PixelPort.exe`. Build details are in [packaging](packaging.md) and the
+[release record](release-v0.1.0.md).
 
 ## Modules
 
@@ -81,7 +82,7 @@ released. See [Chrome initialization](investigations/chrome-initialization.md).
 | Idle foreground metadata | 250 ms |
 | Idle Chrome request admission | At most once per 750 ms, foreground Chrome only |
 | Stable read | Two matching reads 120 ms apart |
-| Request deadline | 1 second including worker startup |
+| Request deadline | 1 second in source; 1.5 seconds in new frozen builds, including worker startup |
 | Reply age | At most 300 ms |
 | Required verification flow | 1.5 seconds, including draining old idle work |
 | Retry after reader failure | Two-second cooldown |
@@ -148,3 +149,8 @@ against a hung foreign input queue.
 
 [Validation](validation.md) separates automated, native, and physical evidence.
 [Diagnostics](diagnostics.md) describes retained opt-in support instrumentation.
+
+The frozen default was explicitly approved after ONEFILE timing measurements. It
+remains a bounded failure timeout; only fresh positive verification can authorize
+automatic paste. See [ONEFILE validation](onefile.md). The preexisting physically
+tested ONEDIR binary is preserved with its original 1-second deadline.
