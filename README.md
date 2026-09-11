@@ -1,6 +1,7 @@
 # GPTSnip V0
 
-A small Windows 11 utility: global hotkey → drag a rectangle → clipboard image →
+A small Windows 11 utility: **hold the middle mouse button → drag a rectangle →
+release the middle button** → clipboard image →
 focus your existing ChatGPT web browser window → Ctrl+V → stop. **GPTSnip never sends the message.**
 
 Chrome automatic targeting now verifies the active loaded document at exactly
@@ -8,8 +9,17 @@ Chrome automatic targeting now verifies the active loaded document at exactly
 `Easier Screenshot Sharing - Google Chrome`. Codex and ChatGPT desktop remain
 excluded automatically. Manual G binding remains an explicit override.
 
-The native reader passed the real same-window tab/draft validation gate. The
-complete suite passes **91 tests**. The user confirmed all three real capture cases:
+The middle-mouse gesture is implemented with **145 passing tests** (the committed
+baseline had 91). Native hook installation, message-loop shutdown, hotkey cleanup,
+and the duplicate-instance guard passed the Windows lifecycle smoke. **The user
+confirmed physical Windows acceptance:** hold/drag/release, overlay tracking,
+automatic return to verified ChatGPT Chrome, unsent screenshots, multiple captures
+in one composer, multi-monitor capture, Escape cancellation, normal attachment
+removal, keyboard fallback, automatic targeting, and fail-closed clipboard behavior.
+See [HANDOFF.md](HANDOFF.md) for the acceptance record and remaining limitations.
+
+The unchanged native reader previously passed the real same-window tab/draft
+validation gate. On the keyboard baseline, the user confirmed all three capture cases:
 ChatGPT browser paste, GitHub clipboard-only fallback, and ChatGPT recovery after
 switching back. See [HANDOFF.md](HANDOFF.md) and [MSAA_VALIDATION.md](MSAA_VALIDATION.md).
 
@@ -32,14 +42,36 @@ Windows notification sound if system sounds are enabled.
 
 | Shortcut | Action |
 | --- | --- |
-| **Ctrl+Alt+Shift+S** | Select a region and attempt to paste |
+| **Hold middle button, drag, release** | Primary capture gesture; no extra click |
+| **Ctrl+Alt+Shift+S** | Keyboard fallback: release keys, then left-drag a region |
 | **Escape** | Cancel while selecting; no clipboard change or paste |
 | **Ctrl+Alt+Shift+G** | Optionally bind the foreground ChatGPT window as an override |
-| **Ctrl+Alt+Shift+Q** | Quit and release hotkeys |
+| **Ctrl+Alt+Shift+Q** | Quit, unhook the mouse, and release hotkeys |
 
 Ctrl+C in the launch console also quits. A second instance exits immediately.
 If a shortcut is already registered elsewhere, startup fails with a console
 explanation and releases any shortcuts registered so far.
+
+GPTSnip intentionally owns **middle-button down/up** while running, including
+accidental middle-clicks and presses during another capture. Browser autoscroll,
+middle-click tab closing/opening, and CAD middle-button panning are suppressed.
+Wheel rotation, left/right clicks, side buttons, and ordinary pointer movement
+pass through the hook. If the hook cannot initialize, the console reports
+`Middle-mouse trigger unavailable; keyboard capture remains active.`
+
+Hold the wheel button continuously from the first corner to the opposite corner.
+Release completes the selection using that release's coordinates. Either drag
+direction works. The final clipped rectangle must be **at least 6 physical pixels
+wide AND 6 pixels tall**. A click, tiny drag, or drag returning to a tiny rectangle
+cancels without capturing, changing the clipboard, or pasting. This minimum applies
+only to the middle gesture; keyboard selection behavior is preserved.
+
+**Escape** dismisses the overlay and cancels. Release the still-held middle button;
+that release cannot capture anything. Then press again for the next capture. Focus
+loss or changed desktop bounds also cancel. A **60-second maximum hold**, checked
+every 250 ms, cancels and resets a missing-release state; it never infers a successful
+release. If the button was already held when the hook installed, that preexisting
+interaction is passed through until release so its earlier down is balanced.
 
 ## Prepare the destination
 
@@ -49,8 +81,10 @@ explanation and releases any shortcuts registered so far.
 3. Leave Chrome foreground for about two seconds. Expect
    `Chrome target verified as chatgpt.com` in the console. **No G binding or
    ChatGPT title marker is needed.** G remains an explicit override.
-4. Switch to the application you want to capture. Press **Ctrl+Alt+Shift+S**,
-   release the keys, drag a rectangle, and release the mouse.
+4. Switch to the application you want to capture. **Press and hold the wheel button,
+   drag the rectangle, and release the wheel button.** No left click or second
+   press is needed. Alternatively, press **Ctrl+Alt+Shift+S**, release the keys,
+   and left-drag a rectangle.
 5. Check the attachment, add your context, and send it yourself.
 
 Chrome identity comes from the loaded document, so conversation-only titles work.
@@ -160,6 +194,10 @@ after the final check, and composer focus must still be established by the user.
 
 - Translucent desktop overlay, crosshair, visible rectangle, and Escape cancel.
   Losing overlay focus cancels. Repeated triggers during capture/paste are ignored.
+- Middle selection appears before the first target-verification reply arrives.
+  A fast release is retained until that existing check finishes; it cannot bypass
+  verification. The capture/clipboard/activation/paste implementation and manual
+  G targeting are unchanged. Nothing presses Enter or clicks Send.
 - Per-monitor DPI awareness is enabled before UI creation. Win32 physical cursor
   coordinates and virtual-screen bounds support monitors left/above the primary.
   The overlay is placed with SetWindowPos, avoiding Tk's negative-offset geometry.
@@ -203,11 +241,33 @@ Optional native lifecycle smoke test (quit GPTSnip first):
 .\.venv\Scripts\python.exe tests\native_smoke.py
 ```
 
-This briefly registers the actual hotkeys, tests native message dispatch and the
-duplicate-instance guard, then verifies hotkey cleanup. It does not capture the
+This briefly registers the actual hotkeys and global mouse hook, disables gesture
+admission, tests native message dispatch and the duplicate-instance guard, then
+verifies hotkey cleanup, unhooking, and hook-thread exit. Middle clicks are briefly
+suppressed while it runs. It does not capture the
 screen, alter the clipboard, focus another application, or inject keyboard input.
 
+The mouse boundary uses native `WH_MOUSE_LL` on a dedicated thread with a
+`GetMessageW` loop. Its callback only classifies input, suppresses middle down/up,
+and publishes one immutable latest gesture sample. Tk consumes samples on its
+existing 30 ms timer and renders only changes; cursor motion is event-driven, with
+no cursor-position polling or unbounded movement queue. No screenshot, MSAA/COM,
+Tk calls, logging, or input injection runs inside the hook callback. No new
+dependencies were added.
+
+The intended scope is normal Windows 11 desktop applications. Physical capture
+and multi-monitor operation passed on the user's setup. This does not establish
+compatibility with every application, mouse driver, monitor layout, or mixed-DPI
+configuration; those combinations need their own validation.
+Secure desktops/UAC, elevated applications, remote sessions, full-screen games,
+third-party remappers, and free-threaded Python have not been validated. Windows
+can silently remove a slow low-level hook; that condition is not directly
+detectable. Use the keyboard fallback and restart GPTSnip if the gesture stops
+responding. No automatic hook-reinstallation loop is implemented.
+
 Implementation references: Microsoft's [foreground-window restrictions](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow),
+[low-level mouse hook contract](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelmouseproc),
+[physical hook coordinates](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-msllhookstruct),
 [SendInput behavior](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput),
 [clipboard formats](https://learn.microsoft.com/en-us/windows/win32/dataxchg/clipboard-formats),
 and Pillow's [ImageGrab coordinates](https://pillow.readthedocs.io/en/stable/reference/ImageGrab.html).

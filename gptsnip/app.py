@@ -16,6 +16,7 @@ from .core import choose_target
 from .browser import BrowserReader, MAX_RESULT_AGE
 from . import native_document
 from .selector import Selector
+from .mouse import MouseHook
 from . import windows as native
 
 HOTKEYS = {1: ord("S"), 2: ord("G"), 3: ord("Q")}
@@ -44,6 +45,12 @@ class App:
         self.stopping = False
         self.hwnd = None
         self.class_atom = None
+        self.mouse_hook = None
+        self.middle_id = None
+        self.middle_box = None
+        self.middle_target_ready = False
+        self.next_mouse_health = 0
+        self.last_mouse_sample = None
         self.instance = win32api.GetModuleHandle(None)
         self.root.report_callback_exception = self.callback_error
 
@@ -64,10 +71,79 @@ class App:
                 raise RuntimeError(f"Ctrl+Alt+Shift+{chr(key)} is unavailable; "
                                    "close the conflicting application and retry.") from exc
             self.registered.append(identifier)
-        print("GPTSnip ready. Ctrl+Alt+Shift+S: capture | G: bind ChatGPT | Q: quit", flush=True)
+        self.start_mouse()
+        print("GPTSnip ready. Hold wheel + drag + release: capture | Ctrl+Alt+Shift+S: keyboard capture "
+              "| G: bind ChatGPT | Q: quit", flush=True)
         print("Click your ChatGPT web composer in Chrome; verified chatgpt.com is remembered automatically. "
               "Keep that tab active in its window. G is an optional override.", flush=True)
         self.root.after(30, self.tick)
+
+    def start_mouse(self):
+        hook = None
+        try:
+            hook = MouseHook()
+            hook.start()
+        except Exception as exc:
+            if hook is not None:
+                hook.close()
+            self.notice(f"Middle-mouse trigger unavailable; keyboard capture remains active. {exc}")
+        else:
+            self.mouse_hook = hook
+            self.notice("Middle-click belongs to GPTSnip while running; wheel scrolling is unchanged.")
+
+    def reset_middle(self):
+        if self.mouse_hook and self.middle_id is not None:
+            self.mouse_hook.state.acknowledged = self.middle_id
+        self.middle_id = None
+        self.middle_box = None
+        self.middle_target_ready = False
+
+    def poll_mouse(self):
+        hook = self.mouse_hook
+        if hook is None:
+            return
+        if hook.error:
+            if self.middle_id is not None:
+                if self.selector:
+                    self.selector.finish(None)
+                else:
+                    self.selection_complete(None)
+            hook.close()
+            self.mouse_hook = None
+            self.notice(f"Middle-mouse trigger unavailable; keyboard capture remains active. {hook.error}")
+            return
+        state = hook.state
+        gesture = state.gesture
+        if gesture is not None and gesture.serial > state.acknowledged:
+            if self.middle_id is None:
+                if self.busy or gesture.cancelled:
+                    state.acknowledged = gesture.serial
+                else:
+                    self.begin_capture(gesture)
+            if (self.middle_id == gesture.serial and self.selector
+                    and gesture is not self.last_mouse_sample):
+                self.last_mouse_sample = gesture
+                if gesture.cancelled:
+                    self.notice("Middle-mouse capture cancelled: 60-second hold limit or missing release.")
+                    self.selector.finish(None)
+                elif native.desktop_bounds() != self.bounds:
+                    self.notice("Middle-mouse capture cancelled: display layout changed.")
+                    self.selector.finish(None)
+                else:
+                    self.selector.move_to(gesture.point)
+                    if gesture.released:
+                        if self.selector.middle_box(gesture.point) is None:
+                            self.notice("Middle-mouse capture ignored: drag below threshold (6 pixels per dimension).")
+                        self.selector.middle_release(gesture.point)
+            # Focus/display loss also cancels a stationary held gesture.
+        if self.middle_id is not None and self.selector and time.monotonic() >= self.next_mouse_health:
+            self.next_mouse_health = time.monotonic() + 0.25
+            if native.desktop_bounds() != self.bounds:
+                self.notice("Middle-mouse capture cancelled: display layout changed.")
+                self.selector.finish(None)
+            else:
+                self.selector.check_focus()
+        state.accepting = not self.busy and not self.stopping
 
     def window_proc(self, hwnd, message, wparam, lparam):
         if message == win32con.WM_HOTKEY:
@@ -88,12 +164,17 @@ class App:
         if self.selector:
             self.selector.finish(None)
             self.selector = None
+        self.reset_middle()
         self.notice(str(error), error=True)
 
     def tick(self):
         if self.stopping:
             return
         now = time.monotonic()
+        try:
+            self.poll_mouse()
+        except Exception as exc:
+            self.fail(exc)
         self.poll_identity()
         if not self.busy and now >= self.next_observation:
             self.next_observation = now + OBSERVATION_SECONDS
@@ -220,10 +301,22 @@ class App:
         self.bound = window
         self.notice("Target bound for this run. Rebind if its tab/title changes.")
 
-    def begin_capture(self):
+    def begin_capture(self, gesture=None):
+        if self.busy or self.stopping:
+            return
         self.busy = True
+        if self.mouse_hook:
+            self.mouse_hook.state.accepting = False
         self.generation += 1
         self.target = self.target_document = None
+        if gesture is not None:
+            self.middle_id = gesture.serial
+            self.middle_box = None
+            self.middle_target_ready = False
+            self.bounds = native.desktop_bounds()
+            self.selector = Selector(self.root, self.bounds, self.selection_complete,
+                                     middle_start=gesture.start)
+            self.notice("Middle-mouse capture started.")
         windows = native.list_windows()
         self.target_source = ("manual binding" if self.bound is not None else
                               "automatic memory" if self.remembered is not None else "discovery")
@@ -249,8 +342,15 @@ class App:
         else:
             self.notice(f"No valid target via {self.target_source}; capture will stay on the clipboard. "
                         "Automatic target unavailable: browser identity could not be verified.")
-        self.bounds = native.desktop_bounds()
-        self.selector = Selector(self.root, self.bounds, self.selection_complete)
+        if self.middle_id is not None:
+            # Show the held-button overlay immediately; preserve the existing
+            # first fresh target check before allowing capture/paste to proceed.
+            self.middle_target_ready = True
+            if self.middle_box is not None:
+                self.selection_complete(self.middle_box)
+        else:
+            self.bounds = native.desktop_bounds()
+            self.selector = Selector(self.root, self.bounds, self.selection_complete)
 
     def selection_complete(self, box):
         self.selector = None
@@ -258,8 +358,14 @@ class App:
             self.generation += 1
             self.verification = None
             self.busy = False
-            self.notice("Capture cancelled.")
+            self.notice("Middle-mouse capture cancelled." if self.middle_id is not None else "Capture cancelled.")
+            self.reset_middle()
             return
+        if self.middle_id is not None:
+            if not self.middle_target_ready:
+                self.middle_box = box
+                return
+            self.reset_middle()
         # Destroy/hide has already happened. Let the desktop repaint before the
         # final live capture; do not take pixels from the translucent selector.
         self.root.after(120, lambda: self.capture(box))
@@ -348,18 +454,32 @@ class App:
         self.generation += 1
         self.verification = None
         self.busy = False
+        if self.middle_id is not None:
+            if self.selector:
+                self.selector.finish(None)
+            self.reset_middle()
         self.notice(str(error), True)
 
     def stop(self):
         self.stopping = True
         self.generation += 1
         self.verification = None
+        if self.mouse_hook:
+            self.mouse_hook.close()
         self.reader.close()
         if self.selector:
             self.selector.finish(None)
         self.root.quit()
 
     def close(self):
+        self.stopping = True
+        if self.mouse_hook:
+            self.mouse_hook.close()
+            if self.mouse_hook.error:
+                self.notice(self.mouse_hook.error)
+        if self.selector:
+            self.selector.finish(None)
+        self.reset_middle()
         self.reader.close()
         for identifier in self.registered:
             win32gui.UnregisterHotKey(self.hwnd, identifier)

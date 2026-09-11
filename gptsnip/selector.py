@@ -8,11 +8,14 @@ import win32gui
 
 from .core import selection_box
 
+MIN_MIDDLE_DRAG = 6  # Physical pixels in BOTH dimensions after clipping.
+
 
 class Selector:
-    def __init__(self, root, bounds, complete):
+    def __init__(self, root, bounds, complete, middle_start=None):
         self.bounds, self.complete = bounds, complete
-        self.start = None
+        self.start = middle_start
+        self.middle = middle_start is not None
         self.closed = False
         self.window = tk.Toplevel(root)
         self.window.withdraw()
@@ -22,13 +25,16 @@ class Selector:
                                 borderwidth=0, cursor="crosshair")
         self.canvas.pack(fill="both", expand=True)
         self.rectangle = self.canvas.create_rectangle(0, 0, 0, 0, outline="#00ffff", width=3)
-        x, y = win32api.GetCursorPos()
+        x, y = middle_start if self.middle else win32api.GetCursorPos()
         self.canvas.create_text(x - bounds[0], y - bounds[1] + 28,
-                                text="Drag to capture · Esc to cancel", fill="white", anchor="n")
+                                text=("Hold wheel and drag · Release to capture · Esc to cancel"
+                                      if self.middle else "Drag to capture · Esc to cancel"),
+                                fill="white", anchor="n")
         self.window.bind("<Escape>", lambda _: self.finish(None))
-        self.canvas.bind("<ButtonPress-1>", self.press)
-        self.canvas.bind("<B1-Motion>", self.drag)
-        self.canvas.bind("<ButtonRelease-1>", self.release)
+        if not self.middle:
+            self.canvas.bind("<ButtonPress-1>", self.press)
+            self.canvas.bind("<B1-Motion>", self.drag)
+            self.canvas.bind("<ButtonRelease-1>", self.release)
         self.window.protocol("WM_DELETE_WINDOW", lambda: self.finish(None))
         self.window.update_idletasks()
         self.hwnd = win32gui.GetAncestor(self.window.winfo_id(), win32con.GA_ROOT)
@@ -52,12 +58,33 @@ class Selector:
         self.start = win32api.GetCursorPos()
 
     def drag(self, _):
+        self.move_to(win32api.GetCursorPos())
+
+    def move_to(self, point):
+        if self.closed:
+            return
         if self.start is not None:
-            box = selection_box(self.start, win32api.GetCursorPos(), self.bounds)
+            box = selection_box(self.start, point, self.bounds)
             if box:
                 l, t, r, b = box
                 x, y = self.bounds[:2]
                 self.canvas.coords(self.rectangle, l-x, t-y, r-x, b-y)
+            else:
+                self.canvas.coords(self.rectangle, 0, 0, 0, 0)
+
+    def middle_release(self, point):
+        if self.closed:
+            return
+        self.check_focus()
+        if self.closed:
+            return
+        self.finish(self.middle_box(point))
+
+    def middle_box(self, point):
+        box = selection_box(self.start, point, self.bounds)
+        if box and box[2] - box[0] >= MIN_MIDDLE_DRAG and box[3] - box[1] >= MIN_MIDDLE_DRAG:
+            return box
+        return None
 
     def release(self, _):
         if self.start is not None:
