@@ -25,7 +25,7 @@ def identity_diagnostic(event, token=None, **fields):
     token = _diagnostic_token if token is None else token
     if (os.environ.get('GPTSNIP_IDENTITY_DIAGNOSTICS') == '1'
             and isinstance(token, int) and 1 <= token <= 12):
-        print(f'GPTSnip identity: token={token} {event} '
+        print(f'PixelPort identity: token={token} {event} '
               + ' '.join(f'{key}={value}' for key, value in fields.items()), flush=True)
 
 

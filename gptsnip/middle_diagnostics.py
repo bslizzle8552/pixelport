@@ -162,16 +162,16 @@ class MiddleDiagnostics:
             except OSError as exc:
                 if not self.file_error_reported:
                     self.file_error_reported = True
-                    print("GPTSnip middle diagnostic: file recording failed ("
+                    print("PixelPort middle diagnostic: file recording failed ("
                           + type(exc).__name__ + "); using console output.", flush=True)
             else:
                 if not self.file_announced:
                     self.file_announced = True
-                    print("GPTSnip middle diagnostic: recording JSONL to " + self.file_path, flush=True)
+                    print("PixelPort middle diagnostic: recording JSONL to " + self.file_path, flush=True)
                 if record["event"] == "trace limit reached; relaunch for more":
-                    print("GPTSnip middle diagnostic: trace limit reached; relaunch for more.", flush=True)
+                    print("PixelPort middle diagnostic: trace limit reached; relaunch for more.", flush=True)
                 return
-        print("GPTSnip middle diagnostic: " + line, flush=True)
+        print("PixelPort middle diagnostic: " + line, flush=True)
 
     def emit(self, app, event, selector=None, **fields):
         if not self.enabled or self.count >= self.LIMIT:

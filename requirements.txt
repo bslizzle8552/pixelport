@@ -1,2 +1,2 @@
-Pillow>=12.1,<13
+Pillow>=12.3.0,<13
 pywin32>=311,<400; sys_platform == "win32"

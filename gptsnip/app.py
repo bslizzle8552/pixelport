@@ -12,6 +12,7 @@ import win32event
 import win32gui
 import winerror
 
+from . import __version__
 from .core import choose_target
 from .browser import BrowserReader, MAX_RESULT_AGE, identity_diagnostic
 from . import native_document
@@ -62,7 +63,7 @@ class App:
         cls.lpszClassName = "GPTSnipV0Hotkeys"
         cls.lpfnWndProc = self.window_proc
         self.class_atom = win32gui.RegisterClass(cls)
-        self.hwnd = win32gui.CreateWindow(self.class_atom, "GPTSnip", 0,
+        self.hwnd = win32gui.CreateWindow(self.class_atom, "PixelPort", 0,
                                           0, 0, 0, 0, 0, 0, self.instance, None)
         for identifier, key in HOTKEYS.items():
             try:
@@ -75,10 +76,10 @@ class App:
             self.registered.append(identifier)
         self.start_mouse()
         self.trace_middle("startup ready")
-        print("GPTSnip ready. Hold wheel + drag + release: capture | Ctrl+Alt+Shift+S: keyboard capture "
-              "| G: bind ChatGPT | Q: quit", flush=True)
+        print(f"PixelPort v{__version__} ready. Hold wheel + drag + release: capture | Ctrl+Alt+Shift+S: keyboard capture "
+              "| Ctrl+Alt+Shift+G: manual override | Ctrl+Alt+Shift+Q: quit", flush=True)
         print("Click your ChatGPT web composer in Chrome; verified chatgpt.com is remembered automatically. "
-              "Keep that tab active in its window. G is an optional override.", flush=True)
+              "Keep that tab active in its window. Ctrl+Alt+Shift+G is an optional override.", flush=True)
         self.root.after(30, self.tick)
 
     def start_mouse(self):
@@ -92,7 +93,7 @@ class App:
             self.notice(f"Middle-mouse trigger unavailable; keyboard capture remains active. {exc}")
         else:
             self.mouse_hook = hook
-            self.notice("Middle-click belongs to GPTSnip while running; wheel scrolling is unchanged.")
+            self.notice("Middle-click belongs to PixelPort while running; wheel scrolling is unchanged.")
 
     def reset_middle(self):
         if self.mouse_hook and self.middle_id is not None:
@@ -162,7 +163,7 @@ class App:
         return win32gui.DefWindowProc(hwnd, message, wparam, lparam)
 
     def notice(self, text, error=False):
-        print(f"GPTSnip: {text}", flush=True)
+        print(f"PixelPort: {text}", flush=True)
         if error:
             win32api.MessageBeep(win32con.MB_ICONEXCLAMATION)
 
@@ -495,7 +496,7 @@ class App:
         try:
             native.paste(self.target, self.clipboard_sequence)
             self.busy = False
-            self.notice("Ctrl+V issued. Check the composer; GPTSnip never sends the message.")
+            self.notice("Ctrl+V issued. Check the composer; PixelPort never sends the message.")
             self.trace_middle("Ctrl+V issued")
         except Exception as exc:
             self.fail(exc)
@@ -547,7 +548,7 @@ def run():
     mutex = win32event.CreateMutex(None, False, "Local\\GPTSnipV0")
     if win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS:
         mutex.Close()
-        print("GPTSnip is already running in this Windows session.")
+        print("PixelPort is already running in this Windows session.")
         return 1
     root = app = None
     previous_signal = None
@@ -561,7 +562,7 @@ def run():
         root.mainloop()
         return 0
     except Exception as exc:
-        print(f"GPTSnip could not run: {exc}", flush=True)
+        print(f"PixelPort could not run: {exc}", flush=True)
         return 1
     finally:
         if previous_signal is not None:

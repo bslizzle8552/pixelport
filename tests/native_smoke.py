@@ -26,7 +26,7 @@ def main():
     mutex = win32event.CreateMutex(None, False, "Local\\GPTSnipV0")
     if win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS:
         mutex.Close()
-        raise RuntimeError("Quit the running GPTSnip before this smoke test.")
+        raise RuntimeError("Quit the running PixelPort before this smoke test.")
     root = tk.Tk()
     root.withdraw()
     app = App(root)
@@ -62,7 +62,7 @@ def main():
         win32gui.UnregisterHotKey(None, identifier)
     print("PASS: native startup, three registrations, WH_MOUSE_LL install/unhook/thread exit, "
           "WM_HOTKEY dispatch, duplicate guard, cleanup.")
-    print("No screenshot, clipboard write, foreground switch, or SendInput was performed.")
+    print("No screenshot, clipboard write, or SendInput was performed; Tk startup may affect foreground.")
 
 
 if __name__ == "__main__":
