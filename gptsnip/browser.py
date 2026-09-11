@@ -6,6 +6,7 @@ owns process creation, IPC, deadlines, and termination; Tk only uses local queue
 
 from dataclasses import dataclass
 import multiprocessing as mp
+import os
 from queue import Empty, Full, Queue
 import re
 from threading import Event, Thread
@@ -16,6 +17,16 @@ READ_TIMEOUT = 1.0
 MAX_RESULT_AGE = 0.3
 STABILITY_SECONDS = 0.12
 RETRY_SECONDS = 2.0
+_diagnostic_token = None
+
+
+def identity_diagnostic(event, token=None, **fields):
+    """Opt-in trace of the first 12 requests per launch; callers pass metadata only."""
+    token = _diagnostic_token if token is None else token
+    if (os.environ.get('GPTSNIP_IDENTITY_DIAGNOSTICS') == '1'
+            and isinstance(token, int) and 1 <= token <= 12):
+        print(f'GPTSnip identity: token={token} {event} '
+              + ' '.join(f'{key}={value}' for key, value in fields.items()), flush=True)
 
 
 def document_hostname(value):
@@ -64,8 +75,11 @@ def _worker(connection):
     import sys
     sys.coinit_flags = 0
     from .native_document import read_stable
+    global _diagnostic_token
     while True:
         token, window, deadline = connection.recv()
+        _diagnostic_token = token
+        identity_diagnostic('worker received request')
         if time.monotonic() >= deadline:
             result = DocumentResult(reason='deadline')
         else:
@@ -74,6 +88,7 @@ def _worker(connection):
             except Exception:
                 # Provider exception messages can contain private data.
                 result = DocumentResult(reason='provider_error')
+        identity_diagnostic('native result', status=result.status, host=result.host, reason=result.reason)
         connection.send((token, result))
 
 
@@ -101,6 +116,7 @@ class BrowserReader:
         self.pending = (token, deadline)
         self.occupied.set()
         self.requests.put_nowait((token, window, deadline))
+        identity_diagnostic('request admitted', token)
         if self.thread is None:
             self.thread = Thread(target=self._supervise, name='GPTSnip identity', daemon=True)
             self.thread.start()
@@ -112,17 +128,20 @@ class BrowserReader:
         token, deadline = self.pending
         if self.clock() >= deadline:
             self.pending = None
+            identity_diagnostic('result rejected: deadline', token)
             return token, DocumentResult(reason='timeout')
         try:
             received, result = self.results.get_nowait()
         except Empty:
             return None
         if received != token:
+            identity_diagnostic('result rejected: stale token', token)
             return None
         self.pending = None
         age = self.clock() - result.sampled_at
         if result.status == 'verified' and not 0 <= age <= MAX_RESULT_AGE:
             result = DocumentResult(reason='stale_reply')
+        identity_diagnostic('transport delivered result', token, status=result.status, reason=result.reason)
         return token, result
 
     def close(self):
@@ -159,6 +178,7 @@ class BrowserReader:
                 except Empty:
                     continue
                 result = DocumentResult(reason='worker_unavailable')
+                identity_diagnostic('supervisor received request', token)
                 try:
                     if self.clock() < retry_at:
                         result = DocumentResult(reason='worker_cooldown')
@@ -168,6 +188,7 @@ class BrowserReader:
                             process = context.Process(target=self.worker, args=(child,), daemon=True)
                             process.start()
                             child.close()
+                            identity_diagnostic('browser worker started', token, pid=process.pid)
                         connection.send((token, window, deadline))
                         while not self.stopping.is_set() and self.clock() < deadline:
                             if connection.poll(min(0.05, max(0, deadline - self.clock()))):
@@ -184,6 +205,8 @@ class BrowserReader:
                             retire()
                             retry_at = self.clock() + RETRY_SECONDS
                 except Exception:
+                    identity_diagnostic('worker transport error', token,
+                                        exitcode=process.exitcode if process is not None else None)
                     result = DocumentResult(reason='worker_error')
                     retire()
                     retry_at = self.clock() + RETRY_SECONDS

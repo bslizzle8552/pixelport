@@ -248,9 +248,42 @@ class SelectorTests(unittest.TestCase):
         self.selector.middle_release((100, 100))
         self.complete.assert_called_once_with(None)
 
+        self.assertEqual(self.selector.cancel_reason, "Escape")
+
     def test_lost_focus_on_release_cancels(self):
         self.foreground.return_value = 999
         self.selector.middle_release((100, 100))
+        self.complete.assert_called_once_with(None)
+        self.assertEqual(self.selector.cancel_reason,
+                         "foreground differs from selector: middle release check")
+
+    def test_focus_out_reason_identifies_deferred_check(self):
+        self.foreground.return_value = 999
+        self.selector.check_focus("Tk FocusOut idle check")
+        self.assertEqual(self.selector.cancel_reason,
+                         "foreground differs from selector: Tk FocusOut idle check")
+        self.complete.assert_called_once_with(None)
+
+    def test_focus_mismatch_trace_retains_exact_compared_handles_before_destroy(self):
+        events = []
+        self.selector.diagnostic = lambda event, **fields: events.append(
+            (event, fields, self.selector.closed))
+        self.foreground.return_value = 999
+        self.selector.check_focus()
+        self.assertEqual(events[0][1]["compared_foreground"], 999)
+        self.assertEqual(events[0][1]["expected_foreground"], 77)
+        self.assertFalse(events[1][2])
+        self.assertEqual(events[1][1]["reason"],
+                         "foreground differs from selector: periodic mouse health check")
+
+    def test_observed_ownership_is_sticky_and_never_reacquired_after_loss(self):
+        self.foreground.return_value = 999
+        with patch("gptsnip.selector.acquire_selector_foreground") as acquire:
+            self.selector.observe_foreground_ownership()
+            self.selector.establish_foreground()
+            self.selector.check_focus()
+        self.assertTrue(self.selector.foreground_established)
+        acquire.assert_not_called()
         self.complete.assert_called_once_with(None)
 
     def test_keyboard_selector_retains_left_button_bindings_and_cursor(self):
@@ -345,6 +378,68 @@ class MouseFlowTests(unittest.TestCase):
         self.grab.assert_called_once_with(bbox=(10, 20, 30, 50), all_screens=True)
         self.copy.assert_called_once()
 
+    def test_fresh_chrome_drag_acquires_foreground_when_tk_only_sets_local_focus(self):
+        # Replay A: Chrome is foreground throughout all Tk setup calls. Neither
+        # a console HWND nor prior console focus is provided to the acquisition.
+        self.chrome()
+        self.foreground.return_value = self.target.hwnd
+        def acquire(hwnd, source):
+            self.assertEqual((hwnd, source), (77, self.target.hwnd))
+            self.foreground.return_value = hwnd
+            return True
+        native_acquire = self.mock("gptsnip.selector.acquire_selector_foreground", side_effect=acquire)
+        self.down()
+        self.assertTrue(self.app.selector.foreground_established)
+        native_acquire.assert_called_once_with(77, self.target.hwnd)
+        self.deliver()
+        self.up()
+        self.run_capture()
+        self.deliver()
+        self.foreground.return_value = self.target.hwnd
+        self.app.wait_focus()
+        self.deliver()
+        self.assertEqual(len(self.reader.calls), 3)
+        self.copy.assert_called_once()
+        count, events, _ = self.send.call_args.args
+        self.assertEqual(count, 4)
+        self.assertEqual([(event.ki.wVk, event.ki.dwFlags) for event in events],
+                         [(0x11, 0), (0x56, 0), (0x56, 2), (0x11, 2)])
+
+    def test_failed_foreground_acquisition_cancels_without_capture_or_target_resolution(self):
+        self.foreground.return_value = 999
+        acquire = self.mock("gptsnip.selector.acquire_selector_foreground", return_value=False)
+        self.down()
+        acquire.assert_called_once_with(77, 999)
+        self.app.notice.assert_any_call(
+            "Middle-mouse capture cancelled: selector foreground not acquired: selector activation check.")
+        self.assertIsNone(self.app.selector)
+        self.assertFalse(self.app.busy)
+        self.windows.assert_not_called()
+        self.up()
+        self.assert_no_output()
+
+    def test_source_switch_during_overlay_setup_cancels_without_acquisition(self):
+        self.foreground.return_value = 999
+        self.window.focus_force.side_effect = lambda: setattr(self.foreground, "return_value", 1000)
+        acquire = self.mock("gptsnip.selector.acquire_selector_foreground")
+        self.down()
+        acquire.assert_not_called()
+        self.assertIsNone(self.app.selector)
+        self.assertFalse(self.app.busy)
+        self.assert_no_output()
+
+    def test_foreground_loss_after_fallback_acquisition_cancels_without_retry(self):
+        self.foreground.return_value = 999
+        acquire = self.mock("gptsnip.selector.acquire_selector_foreground",
+                            side_effect=lambda *_: setattr(self.foreground, "return_value", 77))
+        self.down()
+        self.foreground.return_value = 999
+        self.app.next_mouse_health = 0
+        self.app.poll_mouse()
+        acquire.assert_called_once()
+        self.assertIsNone(self.app.selector)
+        self.assert_no_output()
+
     def test_simple_middle_click_does_not_capture_copy_or_paste(self):
         self.down()
         self.up((10, 20))
@@ -355,6 +450,8 @@ class MouseFlowTests(unittest.TestCase):
         self.down()
         self.up((15, 90))
         self.assert_no_output()
+        self.app.notice.assert_any_call(
+            "Middle-mouse capture cancelled: drag below threshold (6 pixels per dimension).")
 
     def test_escape_cancels_while_held_and_next_physical_gesture_works(self):
         self.down()
@@ -415,12 +512,16 @@ class MouseFlowTests(unittest.TestCase):
         self.up()
         self.assert_no_output()
         self.assertFalse(self.app.busy)
+        self.app.notice.assert_any_call(
+            "Middle-mouse capture cancelled: 60-second hold limit or missing release.")
 
     def test_display_change_cancels_without_clipboard_write(self):
         self.down()
         self.bounds.return_value = (-100, 0, 100, 100)
         self.up()
         self.assert_no_output()
+        self.app.notice.assert_any_call(
+            "Middle-mouse capture cancelled: display layout changed: gesture sample.")
 
     def test_focus_loss_cancels_and_late_release_is_ignored(self):
         self.down()
@@ -429,6 +530,8 @@ class MouseFlowTests(unittest.TestCase):
         self.app.poll_mouse()
         self.up()
         self.assert_no_output()
+        self.app.notice.assert_any_call(
+            "Middle-mouse capture cancelled: foreground differs from selector: periodic mouse health check.")
 
     def test_hook_install_failure_reports_and_keyboard_remains_usable(self):
         self.app.mouse_hook = None
@@ -448,6 +551,7 @@ class MouseFlowTests(unittest.TestCase):
         self.app.poll_mouse()
         hook.close.assert_called_once()
         self.assert_no_output()
+        self.app.notice.assert_any_call("Middle-mouse capture cancelled: mouse hook runtime error.")
         self.app.begin_capture()
         self.assertFalse(self.app.selector.middle)
 

@@ -27,6 +27,8 @@ kernel32.QueryFullProcessImageNameW.restype = wt.BOOL
 dwmapi.DwmGetWindowAttribute.argtypes = [wt.HWND, wt.DWORD, wt.LPVOID, wt.DWORD]
 dwmapi.DwmGetWindowAttribute.restype = ct.c_long
 dwmapi.DwmFlush.restype = ct.c_long
+user32.AttachThreadInput.argtypes = [wt.DWORD, wt.DWORD, wt.BOOL]
+user32.AttachThreadInput.restype = wt.BOOL
 
 
 def enable_dpi_awareness():
@@ -164,3 +166,38 @@ def request_foreground(target):
         win32gui.SetForegroundWindow(target.hwnd)
     except win32api.error:
         pass  # The caller verifies the actual foreground window with a deadline.
+
+
+def acquire_selector_foreground(hwnd, source):
+    """Gesture-only acquisition for our UI window after Tk focus was insufficient.
+
+    Share input state with the unchanged source just for the native activation
+    call, then detach before returning to Tk. No console, synthetic input, sleep,
+    or persistent attachment. The caller must still verify foreground ownership.
+    """
+    current_thread = win32api.GetCurrentThreadId()
+    try:
+        target_thread, target_pid = win32process.GetWindowThreadProcessId(hwnd)
+        if target_thread != current_thread or target_pid != win32api.GetCurrentProcessId():
+            return False
+        foreground = win32gui.GetForegroundWindow()
+        if foreground == hwnd:
+            return True
+        if not source or foreground != source:
+            return False
+        source_thread, _ = win32process.GetWindowThreadProcessId(source)
+        if source_thread == current_thread:
+            win32gui.SetForegroundWindow(hwnd)
+        else:
+            if not user32.AttachThreadInput(current_thread, source_thread, True):
+                return False
+            try:
+                # Do not take foreground back if the user switched meanwhile.
+                if win32gui.GetForegroundWindow() == source:
+                    win32gui.SetForegroundWindow(hwnd)
+            finally:
+                if not user32.AttachThreadInput(current_thread, source_thread, False):
+                    raise RuntimeError("Selector input-thread detachment failed.")
+        return win32gui.GetForegroundWindow() == hwnd
+    except win32api.error:
+        return False

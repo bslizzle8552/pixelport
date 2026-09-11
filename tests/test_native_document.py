@@ -22,6 +22,8 @@ class DocumentTests(unittest.TestCase):
         self.root = self.stack.enter_context(patch.object(doc, '_root_dispatch', return_value=object()))
         self.values = {'accRole': 15, 'accState': 0, 'accValue': 'https://chatgpt.com/c/private-example'}
         self.prop = self.stack.enter_context(patch.object(doc, '_property', side_effect=lambda _, key: self.values[key]))
+        self.initialize = self.stack.enter_context(patch.object(
+            doc, '_request_document_data', return_value=True, create=True))
 
     def test_unique_document_returns_only_host_and_identity(self):
         result = doc.read_once(self.window)
@@ -48,6 +50,52 @@ class DocumentTests(unittest.TestCase):
         result = doc.read_once(self.window)
         self.assertFalse(result.eligible)
         self.assertNotIn('private-example', repr(result))
+
+    def test_cold_provider_requires_initialization_then_two_fresh_msaa_reads(self):
+        # Reproduce Chrome's empty document: ordinary MSAA reads never clear BUSY.
+        # Only the extended root-state request makes document data available.
+        self.values.update(accState=0x844, accValue='')
+        def initialize(_):
+            self.values.update(accState=0x44, accValue='https://chatgpt.com/c/private-example')
+            return True
+        self.initialize.side_effect = initialize
+        with patch.object(doc.time, 'sleep') as sleep:
+            first = doc.read_stable(self.window)
+            self.assertFalse(first.eligible, 'bootstrap must never grant identity')
+            sleep.assert_not_called()  # No extra retry loop or deadline extension.
+            self.prop.reset_mock()
+            second = doc.read_stable(self.window)
+        self.assertTrue(second.eligible, 'a cold provider must recover without another accessibility client')
+        self.initialize.assert_called_once_with(100)
+        self.assertEqual([c.args[1] for c in self.prop.call_args_list].count('accValue'), 2)
+        sleep.assert_called_once_with(doc.STABILITY_SECONDS)
+
+    def test_busy_root_never_qualifies_even_when_it_has_a_target_url(self):
+        self.values['accState'] = 0x844
+        result = doc.read_once(self.window)
+        self.assertFalse(result.eligible)
+        self.assertEqual(result.reason, 'document_initializing')
+        self.assertNotIn('accValue', [c.args[1] for c in self.prop.call_args_list])
+
+    def test_unsupported_or_failed_initialization_stays_unknown(self):
+        self.values['accState'] = 0x844
+        self.initialize.return_value = False
+        self.assertEqual(doc.read_once(self.window).reason, 'document_initialization_unavailable')
+        self.initialize.side_effect = RuntimeError('https://chatgpt.com/c/private-example')
+        result = doc.read_once(self.window)
+        self.assertEqual(result.reason, 'provider_error')
+        self.assertNotIn('private-example', repr(result))
+
+    def test_changed_or_unavailable_root_cannot_bootstrap(self):
+        for state in (0x801, 0x8800, 0x10800):
+            self.values['accState'] = state
+            self.assertFalse(doc.read_once(self.window).eligible)
+        self.values.update(accRole=42, accState=0x800)
+        self.assertFalse(doc.read_once(self.window).eligible)
+        self.values['accRole'] = 15
+        self.snap.side_effect = [self.snapshot, None]
+        self.assertEqual(doc.read_once(self.window).reason, 'identity_changed_during_read')
+        self.initialize.assert_not_called()
 
     def test_renderer_changes_during_read_discard_hostname(self):
         self.snap.side_effect = [self.snapshot, None]
@@ -76,6 +124,46 @@ class DocumentTests(unittest.TestCase):
                 self.assertFalse(doc.read_stable(self.window).eligible)
         with patch.object(doc, 'read_once', side_effect=[a, a]), patch.object(doc.time, 'sleep'):
             self.assertTrue(doc.read_stable(self.window).eligible)
+
+
+@unittest.skipUnless(sys.platform == 'win32', 'Windows native metadata')
+class InitializationBoundaryTests(unittest.TestCase):
+    def test_root_only_query_releases_all_interfaces_on_success_failure_and_exception(self):
+        import ctypes as ct
+        import uuid
+        for failed_slot in (None, 0, 3, 35, 'exception'):
+            with self.subTest(failed_slot=failed_slot):
+                calls, released = [], []
+                def method(pointer, slot, result, *arguments):
+                    calls.append((pointer.value, slot))
+                    def invoke(pointer, *args):
+                        if slot in (0, 3):
+                            expected = ('6d5140c1-7436-11ce-8034-00aa006009fa'
+                                        if slot == 0 else 'e89f726e-c4f4-4c19-bb19-b647d7fa8478')
+                            self.assertEqual(ct.string_at(args[0], 16), uuid.UUID(expected).bytes_le)
+                            if slot == 3:
+                                self.assertEqual(ct.string_at(args[1], 16), uuid.UUID(expected).bytes_le)
+                            ct.cast(args[-1], ct.POINTER(ct.c_void_p))[0] = 200 if slot == 0 else 300
+                        elif failed_slot == 'exception':
+                            raise RuntimeError('provider failed')
+                        else:
+                            self.assertEqual(ct.sizeof(ct.c_long), 4)
+                            ct.cast(args[0], ct.POINTER(ct.c_long))[0] = 1024
+                        return -1 if slot == failed_slot else 0
+                    return invoke
+                with patch.object(doc, '_root_pointer', return_value=ct.c_void_p(100)) as root, \
+                        patch.object(doc, '_com_method', side_effect=method), \
+                        patch.object(doc, '_release', side_effect=lambda p: released.append(p.value) if p.value else None):
+                    if failed_slot == 'exception':
+                        with self.assertRaises(RuntimeError):
+                            doc._request_document_data(1234)
+                    else:
+                        self.assertEqual(doc._request_document_data(1234), failed_slot is None)
+                root.assert_called_once_with(1234, '618736e0-3c3d-11cf-810c-00aa00389b71')
+                self.assertEqual(calls, [(100, 0)] if failed_slot == 0
+                                 else [(100, 0), (200, 3)] if failed_slot == 3
+                                 else [(100, 0), (200, 3), (300, 35)])
+                self.assertEqual(released, [200, 100] if failed_slot == 0 else [300, 200, 100])
 
 
 @unittest.skipUnless(sys.platform == 'win32', 'Windows native metadata')

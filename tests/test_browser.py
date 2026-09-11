@@ -2,8 +2,9 @@
 import multiprocessing as mp
 import time
 import unittest
+from unittest.mock import patch
 
-from gptsnip.browser import BrowserReader, DocumentResult, document_hostname, is_chatgpt_url
+from gptsnip.browser import BrowserReader, DocumentResult, document_hostname, is_chatgpt_url, identity_diagnostic
 
 
 def echo_worker(connection):
@@ -58,6 +59,17 @@ class URLTests(unittest.TestCase):
     def test_github_is_verified_as_a_different_hostname(self):
         self.assertEqual(document_hostname('https://github.com/example'), 'github.com')
         self.assertFalse(is_chatgpt_url('https://github.com/example'))
+
+
+class DiagnosticTests(unittest.TestCase):
+    def test_trace_is_opt_in_and_stops_after_twelve_requests(self):
+        with patch.dict('os.environ', {'GPTSNIP_IDENTITY_DIAGNOSTICS': '0'}), patch('builtins.print') as output:
+            identity_diagnostic('request admitted', 1)
+            output.assert_not_called()
+        with patch.dict('os.environ', {'GPTSNIP_IDENTITY_DIAGNOSTICS': '1'}), patch('builtins.print') as output:
+            for token in range(1, 100):
+                identity_diagnostic('request admitted', token)
+            self.assertEqual(output.call_count, 12)
 
 
 class WorkerTests(unittest.TestCase):

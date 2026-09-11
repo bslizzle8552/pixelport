@@ -13,10 +13,11 @@ import win32gui
 import winerror
 
 from .core import choose_target
-from .browser import BrowserReader, MAX_RESULT_AGE
+from .browser import BrowserReader, MAX_RESULT_AGE, identity_diagnostic
 from . import native_document
 from .selector import Selector
 from .mouse import MouseHook
+from .middle_diagnostics import MiddleDiagnostics
 from . import windows as native
 
 HOTKEYS = {1: ord("S"), 2: ord("G"), 3: ord("Q")}
@@ -51,6 +52,7 @@ class App:
         self.middle_target_ready = False
         self.next_mouse_health = 0
         self.last_mouse_sample = None
+        self.middle_diagnostics = MiddleDiagnostics()
         self.instance = win32api.GetModuleHandle(None)
         self.root.report_callback_exception = self.callback_error
 
@@ -72,6 +74,7 @@ class App:
                                    "close the conflicting application and retry.") from exc
             self.registered.append(identifier)
         self.start_mouse()
+        self.trace_middle("startup ready")
         print("GPTSnip ready. Hold wheel + drag + release: capture | Ctrl+Alt+Shift+S: keyboard capture "
               "| G: bind ChatGPT | Q: quit", flush=True)
         print("Click your ChatGPT web composer in Chrome; verified chatgpt.com is remembered automatically. "
@@ -98,16 +101,22 @@ class App:
         self.middle_box = None
         self.middle_target_ready = False
 
+    def trace_middle(self, event, selector=None, **fields):
+        self.middle_diagnostics.emit(self, event, selector, **fields)
+
+    def cancel_selection(self, reason):
+        if self.selector:
+            self.selector.finish(None, reason)
+        else:
+            self.selection_complete(None, reason)
+
     def poll_mouse(self):
         hook = self.mouse_hook
         if hook is None:
             return
         if hook.error:
             if self.middle_id is not None:
-                if self.selector:
-                    self.selector.finish(None)
-                else:
-                    self.selection_complete(None)
+                self.cancel_selection("mouse hook runtime error")
             hook.close()
             self.mouse_hook = None
             self.notice(f"Middle-mouse trigger unavailable; keyboard capture remains active. {hook.error}")
@@ -117,6 +126,8 @@ class App:
         if gesture is not None and gesture.serial > state.acknowledged:
             if self.middle_id is None:
                 if self.busy or gesture.cancelled:
+                    self.trace_middle("gesture not admitted", reason=(
+                        "another capture is busy" if self.busy else "gesture expired before admission"))
                     state.acknowledged = gesture.serial
                 else:
                     self.begin_capture(gesture)
@@ -124,14 +135,13 @@ class App:
                     and gesture is not self.last_mouse_sample):
                 self.last_mouse_sample = gesture
                 if gesture.cancelled:
-                    self.notice("Middle-mouse capture cancelled: 60-second hold limit or missing release.")
-                    self.selector.finish(None)
+                    self.cancel_selection("60-second hold limit or missing release")
                 elif native.desktop_bounds() != self.bounds:
-                    self.notice("Middle-mouse capture cancelled: display layout changed.")
-                    self.selector.finish(None)
+                    self.cancel_selection("display layout changed: gesture sample")
                 else:
                     self.selector.move_to(gesture.point)
                     if gesture.released:
+                        self.trace_middle("physical middle release consumed")
                         if self.selector.middle_box(gesture.point) is None:
                             self.notice("Middle-mouse capture ignored: drag below threshold (6 pixels per dimension).")
                         self.selector.middle_release(gesture.point)
@@ -139,8 +149,7 @@ class App:
         if self.middle_id is not None and self.selector and time.monotonic() >= self.next_mouse_health:
             self.next_mouse_health = time.monotonic() + 0.25
             if native.desktop_bounds() != self.bounds:
-                self.notice("Middle-mouse capture cancelled: display layout changed.")
-                self.selector.finish(None)
+                self.cancel_selection("display layout changed: periodic mouse health check")
             else:
                 self.selector.check_focus()
         state.accepting = not self.busy and not self.stopping
@@ -158,12 +167,15 @@ class App:
             win32api.MessageBeep(win32con.MB_ICONEXCLAMATION)
 
     def callback_error(self, kind, error, traceback):
+        self.trace_middle("Tk callback exception", error_type=kind.__name__)
         self.generation += 1
         self.verification = None
         self.busy = False
         if self.selector:
-            self.selector.finish(None)
+            self.selector.finish(None, "Tk callback exception: " + kind.__name__)
             self.selector = None
+        elif self.middle_id is not None:
+            self.notice("Middle-mouse capture cancelled: Tk callback exception: " + kind.__name__ + ".")
         self.reset_middle()
         self.notice(str(error), error=True)
 
@@ -171,6 +183,7 @@ class App:
         if self.stopping:
             return
         now = time.monotonic()
+        self.middle_diagnostics.poll(self)
         try:
             self.poll_mouse()
         except Exception as exc:
@@ -210,6 +223,8 @@ class App:
                     and self.identity_pending is None):
                 token = self.reader.request(foreground)
                 if token is not None:
+                    identity_diagnostic('Chrome foreground candidate observed', token,
+                                        hwnd=hex(hwnd), pid=foreground.pid)
                     self.identity_pending = (token, 'idle', foreground, self.generation, None, None)
                     self.next_browser_observation = time.monotonic() + BROWSER_OBSERVATION_SECONDS
         elif foreground.recognized:
@@ -230,16 +245,23 @@ class App:
             self.chrome_memory = None
             # Keep the old target snapshot: discovery must not redirect a capture.
 
-    def checked_identity(self, window, result, expected=None):
+    def checked_identity(self, window, result, expected=None, token=None):
         try:
-            if (result.status == 'verified' and result.snapshot is not None
-                    and result.snapshot.window == window
-                    and 0 <= time.monotonic() - result.sampled_at <= MAX_RESULT_AGE
-                    and (expected is None or result.snapshot == expected)
-                    and native_document.is_current(result.snapshot)):
+            if result.status != 'verified' or result.snapshot is None:
+                reason = 'unverified document'
+            elif result.snapshot.window != window:
+                reason = 'window identity changed'
+            elif not 0 <= time.monotonic() - result.sampled_at <= MAX_RESULT_AGE:
+                reason = 'stale sample'
+            elif expected is not None and result.snapshot != expected:
+                reason = 'capture identity changed'
+            elif not native_document.is_current(result.snapshot):
+                reason = 'native identity changed'
+            else:
                 return result
         except Exception:
-            pass
+            reason = 'identity check unavailable'
+        identity_diagnostic('result rejected: ' + reason, token)
         return None
 
     def verify(self, window, expected, complete):
@@ -255,10 +277,17 @@ class App:
         if reply is not None and self.identity_pending is not None:
             token, result = reply
             pending, kind, window, generation, expected, complete = self.identity_pending
+            self.trace_middle("Chrome verification reply", token=token, kind=kind,
+                              status=result.status, eligible=result.eligible,
+                              request_generation=generation)
+            identity_diagnostic('App consumed result', token, kind=kind,
+                                status=result.status, reason=result.reason)
             if token == pending:
                 self.identity_pending = None
                 if generation == self.generation:
-                    checked = self.checked_identity(window, result, expected)
+                    checked = self.checked_identity(window, result, expected, token)
+                    identity_diagnostic('App identity check', token, accepted=checked is not None,
+                                        eligible=bool(checked and checked.eligible))
                     if kind == 'idle' and not self.busy:
                         if checked is None or not checked.eligible:
                             self.invalidate_automatic(window)
@@ -267,6 +296,7 @@ class App:
                                        or self.chrome_memory != checked.snapshot)
                             self.remembered, self.chrome_memory = window, checked.snapshot
                             self.memory_blocked = False
+                            identity_diagnostic('automatic Chrome target remembered', token, host=checked.host)
                             if changed:
                                 self.notice("Chrome target verified as chatgpt.com."
                                             f" PID={window.pid}, HWND={window.hwnd:#x}."
@@ -280,6 +310,10 @@ class App:
                             complete(None)
                         else:
                             complete(checked)
+                else:
+                    identity_diagnostic('result rejected: capture generation changed', token)
+            else:
+                identity_diagnostic('result rejected: stale App token', token)
         if self.verification is not None:
             window, expected, complete, generation, deadline = self.verification
             if generation != self.generation:
@@ -303,7 +337,11 @@ class App:
 
     def begin_capture(self, gesture=None):
         if self.busy or self.stopping:
+            if gesture is not None:
+                self.trace_middle("gesture not admitted", reason="busy or stopping")
             return
+        if gesture is not None:
+            self.trace_middle("middle admission before overlay")
         self.busy = True
         if self.mouse_hook:
             self.mouse_hook.state.accepting = False
@@ -315,8 +353,13 @@ class App:
             self.middle_target_ready = False
             self.bounds = native.desktop_bounds()
             self.selector = Selector(self.root, self.bounds, self.selection_complete,
-                                     middle_start=gesture.start)
+                                     middle_start=gesture.start,
+                                     diagnostic=(self.trace_middle if self.middle_diagnostics.enabled else None))
+            self.trace_middle("middle selector constructed")
             self.notice("Middle-mouse capture started.")
+            self.selector.establish_foreground()
+            if self.selector is None:
+                return  # Acquisition cancelled; do not start target resolution.
         windows = native.list_windows()
         self.target_source = ("manual binding" if self.bound is not None else
                               "automatic memory" if self.remembered is not None else "discovery")
@@ -336,6 +379,7 @@ class App:
     def select_target(self, target, result=None):
         self.target = target
         self.target_document = result.snapshot if result else None
+        self.trace_middle("capture target resolved", verified=bool(result and result.eligible))
         if self.target is not None:
             self.notice(f"Target selected via {self.target_source}: process={self.target.process}, "
                         f"PID={self.target.pid}, HWND={self.target.hwnd:#x}.")
@@ -352,13 +396,18 @@ class App:
             self.bounds = native.desktop_bounds()
             self.selector = Selector(self.root, self.bounds, self.selection_complete)
 
-    def selection_complete(self, box):
+    def selection_complete(self, box, reason=None):
+        reason = reason or (self.selector.cancel_reason if self.selector else None)
+        if box is None or self.stopping:
+            reason = reason or ("application stopping" if self.stopping else "selection cancelled by caller")
+        self.trace_middle("selection completion", box=box, reason=reason)
         self.selector = None
         if box is None or self.stopping:
             self.generation += 1
             self.verification = None
             self.busy = False
-            self.notice("Middle-mouse capture cancelled." if self.middle_id is not None else "Capture cancelled.")
+            self.notice(f"Middle-mouse capture cancelled: {reason}."
+                        if self.middle_id is not None else "Capture cancelled.")
             self.reset_middle()
             return
         if self.middle_id is not None:
@@ -447,16 +496,21 @@ class App:
             native.paste(self.target, self.clipboard_sequence)
             self.busy = False
             self.notice("Ctrl+V issued. Check the composer; GPTSnip never sends the message.")
+            self.trace_middle("Ctrl+V issued")
         except Exception as exc:
             self.fail(exc)
 
     def fail(self, error):
+        self.trace_middle("capture flow failure", error_type=type(error).__name__)
         self.generation += 1
         self.verification = None
         self.busy = False
         if self.middle_id is not None:
             if self.selector:
-                self.selector.finish(None)
+                self.selector.finish(None, "capture flow failure: " + type(error).__name__)
+            else:
+                self.notice("Middle-mouse capture cancelled: capture flow failure: "
+                            + type(error).__name__ + ".")
             self.reset_middle()
         self.notice(str(error), True)
 
@@ -468,7 +522,7 @@ class App:
             self.mouse_hook.close()
         self.reader.close()
         if self.selector:
-            self.selector.finish(None)
+            self.selector.finish(None, "application quit")
         self.root.quit()
 
     def close(self):
@@ -478,7 +532,7 @@ class App:
             if self.mouse_hook.error:
                 self.notice(self.mouse_hook.error)
         if self.selector:
-            self.selector.finish(None)
+            self.selector.finish(None, "application cleanup")
         self.reset_middle()
         self.reader.close()
         for identifier in self.registered:
