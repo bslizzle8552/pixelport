@@ -22,7 +22,7 @@ icon = root / "assets/pixelport.ico"
 exe = EXE(
     pyz, analysis.scripts, analysis.binaries, analysis.datas, [], name="PixelPort",
     debug=False, bootloader_ignore_signals=False, strip=False, upx=False,
-    console=True, version=version_info(root), icon=str(icon) if icon.is_file() else None,
+    console=True, version=version_info(root), icon=str(icon),
 )
 # Readable companion notices; also embedded so copying the EXE preserves them.
 for source, destination in notices:

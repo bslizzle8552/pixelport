@@ -2,18 +2,21 @@
 
 The user reports successful real-world physical testing of the ONEFILE executable
 and explicitly accepts PixelPort v0.1.0. Release acceptance is complete.
-The approved logo is assets/pixelport.png. The default executable icon is retained.
+The approved logo is assets/pixelport.png. The September 29, 2026 release update
+embeds its symbol as the Windows icon using assets/pixelport.ico.
 
 ## Final artifacts
 
-The accepted executable was reused without rebuilding: every bundled project module
-and the launcher match current application source. README, validation documentation,
-release staging and a test-only freshness assertion do not change the executable.
+The accepted executable was reused without rebuilding its application code. Only
+Windows icon resources were updated. Every entry in the frozen archive was compared
+with the original executable and verified byte-for-byte unchanged. The frozen payload
+SHA-256 is `98b1b1b504fa42dbe7f3745e32ee6fa83fafd93ef408ef827eb7de2b518aa48f`.
+Windows icon extraction was visually checked, and startup plus graceful quit passed.
 
 | File | Bytes | SHA-256 |
 |---|---:|---|
-| PixelPort.exe | 19842768 | `5d92b142a0f8723102254bd6b866398d93d75a97e717ec45db3e01cda70a7311` |
-| PixelPort-v0.1.0-windows-x64.zip | 19634216 | `653d6d102479b9f45285af7baf43bcad739c23312caa1b42b3833a17dcbade14` |
+| PixelPort.exe | 20111568 | `5cdfe9fc8d80b0a8896f1ed12c00513edd70181a4967f5c638c76463b1668428` |
+| PixelPort-v0.1.0-windows-x64.zip | 19711481 | `27eb70fd8f8a64ae76d9b657a3ba11c805c17a64d800cad131348dee173a7c40` |
 
 Ignored local staging: `release-output/PixelPort-v0.1.0-windows-x64/`.
 ZIP: `release-output/PixelPort-v0.1.0-windows-x64.zip`.

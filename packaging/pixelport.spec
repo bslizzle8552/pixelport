@@ -17,11 +17,11 @@ analysis = Analysis(
     noarchive=False, optimize=0,
 )
 pyz = PYZ(analysis.pure)
-icon = root / "assets/pixelport.ico"  # Optional production icon; default until supplied.
+icon = root / "assets/pixelport.ico"
 exe = EXE(
     pyz, analysis.scripts, [], exclude_binaries=True, name="PixelPort",
     debug=False, bootloader_ignore_signals=False, strip=False, upx=False,
-    console=True, version=version_info(root), icon=str(icon) if icon.is_file() else None,
+    console=True, version=version_info(root), icon=str(icon),
     contents_directory="_internal",
 )
 bundle = COLLECT(exe, analysis.binaries, analysis.datas, strip=False, upx=False, name="PixelPort")

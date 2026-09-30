@@ -201,7 +201,8 @@ reputation was not tested. No security settings were changed or bypassed.
 The user completed real-world ONEFILE testing and accepts PixelPort v0.1.0.
 ONEFILE is the chosen release format. ONEDIR timing and provisional physical
 checklists above are historical; they do not impose another release gate.
-The approved PNG logo appears in README. The default EXE icon is retained.
+The approved PNG logo appears in README. The September 29, 2026 icon update embeds
+the PixelPort logo in the EXE; see the release record for current checksums.
 
 The final ZIP contains PixelPort.exe, LICENSE, consolidated THIRD_PARTY_NOTICES.md,
 and SHA256SUMS.txt. Runtime dependencies and original notices are also embedded in

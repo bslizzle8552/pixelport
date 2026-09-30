@@ -56,8 +56,14 @@ imports; browser-worker and normal startup imports were exercised directly.
 
 The spec embeds PixelPort ProductName/FileDescription, version 0.1.0, and
 OriginalFilename PixelPort.exe, derived from gptsnip.__version__. CompanyName is
-omitted. Default PyInstaller icon is used; a final `assets/pixelport.ico` can be
-supplied later. Console mode is explicit; UPX is disabled.
+omitted. Both specs use `assets/pixelport.ico`, derived from the existing logo
+with sizes from 16 to 256 pixels. Console mode is explicit; UPX is disabled.
+
+Run `packaging/install-shortcut.ps1` after a ONEFILE build to create a Start menu
+shortcut pointing to `dist/onefile/PixelPort.exe` in place. Find
+PixelPort in Start, right-click it, and select **Pin to taskbar**. The shortcut
+uses the logo explicitly; earlier executables may still have the default embedded
+icon until rebuilt with the current specs.
 
 ## Local candidate and initial observed gate (historical)
 

@@ -10,9 +10,13 @@ chatgpt.com. No Python installation, OpenAI API key, or PowerShell launch is nee
 ## Download and run
 
 The Windows x64 release package is **PixelPort-v0.1.0-windows-x64.zip**.
-Find published downloads on [GitHub Releases](https://github.com/bslizzle8552/gptsnip/releases).
+Find published downloads on [GitHub Releases](https://github.com/bslizzle8552/pixelport/releases).
 Extract the ZIP and double-click **PixelPort.exe**. Keep its console open or minimized;
 startup takes a few seconds. No installer is required. The v0.1.0 executable is unsigned.
+
+The executable includes the PixelPort logo. To keep it on the taskbar, right-click
+**PixelPort.exe**, choose **Show more options** if needed, and **Pin to taskbar**.
+Keep the extracted executable at that location so the shortcut continues to work.
 
 1. Select your intended ChatGPT tab in Chrome and click its composer.
 2. Wait for the console to confirm `Chrome target verified as chatgpt.com`. No G binding is needed.
